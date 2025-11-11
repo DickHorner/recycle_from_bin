@@ -20,15 +20,14 @@ import stat
 import struct
 import sys
 
+# Verbose logging flag (set by command-line)
+VERBOSE = False
 
-def maybe_encode_pathname(pathname):  # Python 2 only.
-  if not isinstance(pathname, unicode):
-    raise TypeError
-  filesystem_encoding = get_filesystem_encoding()
-  try:
-    return pathname.encode(filesystem_encoding)
-  except (UnicodeEncodeError, ValueError):
-    raise ValueError('Cannot encode pathname as %s: %r' % (filesystem_encoding, pathname))
+# Python 2/3 compatibility
+if sys.version_info < (3, 0):
+  unicode_type = unicode
+else:
+  unicode_type = str
 
 
 if sys.version_info >= (3, 0):  # No need for pathname encodings in Python 3.
@@ -57,7 +56,18 @@ if sys.version_info >= (3, 0):  # No need for pathname encodings in Python 3.
 
   def get_filesystem_encoding():
     raise NotImplementedError
+
 elif sys.platform.startswith('win'):
+  # Python 2 on Windows: convert between mbcs/utf-8 and native unicode.
+  def maybe_encode_pathname(pathname):  # Python 2 only.
+    if not isinstance(pathname, unicode_type):
+      raise TypeError
+    filesystem_encoding = get_filesystem_encoding()
+    try:
+      return pathname.encode(filesystem_encoding)
+    except (UnicodeEncodeError, ValueError):
+      raise ValueError('Cannot encode pathname as %s: %r' % (filesystem_encoding, pathname))
+
   def pathname_to_os(pathname):
     if not isinstance(pathname, str):
       raise TypeError
@@ -66,7 +76,7 @@ elif sys.platform.startswith('win'):
   def pathnames_from_os(pathnames):
     output = []
     for pathname in pathnames:
-      if not isinstance(pathname, unicode):
+      if not isinstance(pathname, unicode_type):
         raise TypeError
       output.append(pathname.encode('utf-8'))  # str.
     return output
@@ -80,14 +90,44 @@ elif sys.platform.startswith('win'):
   def get_filesystem_encoding():
     return 'utf-8'  # Fake, to be used with pathname_to_os.
 
-  # Console message will still be wrong (using UTF-8 encoding).
 else:
+  # Python 2 on non-Windows
+  def maybe_encode_pathname(pathname):  # Python 2 only.
+    if not isinstance(pathname, unicode_type):
+      raise TypeError
+    filesystem_encoding = get_filesystem_encoding()
+    try:
+      return pathname.encode(filesystem_encoding)
+    except (UnicodeEncodeError, ValueError):
+      raise ValueError('Cannot encode pathname as %s: %r' % (filesystem_encoding, pathname))
+
   def pathname_to_os(pathname):
     if not isinstance(pathname, str):
       raise TypeError
     return pathname  # Returns str.
 
   def pathnames_from_os(pathnames):
+    output = []
+    for pathname in pathnames:
+      if not isinstance(pathname, str):
+        raise TypeError
+      output.append(pathname)
+    return output
+
+  def pathname_from_argv(pathname):
+    if not isinstance(pathname, str):
+      raise TypeError
+    return pathname  # Returns str.
+
+  def get_filesystem_encoding(_cache=[]):
+    if not _cache:
+      fsenc = sys.getfilesystemencoding().lower()  # 'ANSI_X3.4-1968' for LC_CTYPE=C on Linux.
+      if fsenc.startswith('ansi') and '1968' in fsenc:
+        fsenc = 'utf-8'
+      elif 'ascii' in fsenc or not fsenc or fsenc == 'c':
+        fsenc = 'utf-8'
+      _cache.append(fsenc)
+    return _cache[0]
     output = []
     for pathname in pathnames:
       if not isinstance(pathname, str):
@@ -155,8 +195,16 @@ def parse_recycle_bin_i_file(filename):
     raise ValueError('Bad drive letter in deleted_pathname: %r' % deleted_pathname)
   if deleted_pathname[1 : 3] != ':\\':
     raise ValueError('Missing drive separator in deleted_pathname: %r' % deleted_pathname)
-  deleted_pathname = os.path.join(*filter(None, (
-      deleted_pathname[0].lower() + deleted_pathname[2:]).split('\\')))
+  # Reconstruct the original absolute Windows pathname (keep drive letter
+  # and colon). Example: 'C:\\Users\\me\\file.txt'.
+  drive = deleted_pathname[0].upper()
+  rest = deleted_pathname[2:]
+  win_path = drive + ':' + rest
+  # Convert backslashes to the current OS separator if needed and
+  # normalize the path.
+  if os.sep != '\\':
+    win_path = win_path.replace('\\', os.sep)
+  deleted_pathname = os.path.normpath(win_path)
   #assert 0, [size, deletion_filetime, deleted_pathname]
   return size, deletion_filetime, deleted_pathname
 
@@ -176,8 +224,10 @@ def process_recycle_bin_pathname(pathname, restore_target_dir):
   r_pathname = os.path.join(os.path.dirname(pathname), '$R' + basename[2:])
   try:
     stat_obj = os.lstat(pathname_to_os(r_pathname))
-  except OSError:
-    return  # Silently ignore.
+  except OSError as e:
+    if VERBOSE:
+      sys.stderr.write('warning: cannot stat %s: %s\n' % (r_pathname, e))
+    return  # Silently ignore unless verbose.
   sys.stderr.write('info: moving from Recycle Bin: %s\n' % r_pathname)
   (size, deletion_filetime, deleted_pathname
   ) = parse_recycle_bin_i_file(pathname)
@@ -212,6 +262,12 @@ def process_recursively(pathname, restore_target_dir):
   try:
     stat_obj = os.lstat(pathname_to_os(pathname))
   except OSError:
+    if VERBOSE:
+      try:
+        # best-effort: show the error by attempting a lstat again to capture the exception
+        os.lstat(pathname_to_os(pathname))
+      except Exception as e:
+        sys.stderr.write('warning: cannot access %s: %s\n' % (pathname, e))
     return  # Silently ignore, probably it's an $R file which has been moved.
   if stat.S_ISDIR(stat_obj.st_mode):
     for entry in sorted(pathnames_from_os(os.listdir(pathname_to_os(pathname)))):
@@ -242,6 +298,10 @@ def main(argv):
       break
     elif arg == '--':
       break
+    elif arg in ('-v', '--verbose'):
+      global VERBOSE
+      VERBOSE = True
+      continue
     elif arg.startswith('--restore-target-dir='):
       restore_target_dir = pathname_from_argv(arg[arg.find('=') + 1:])
     else:
@@ -255,6 +315,8 @@ def main(argv):
   if i != len(argv):
     sys.stderr.write('fatal: too many command-line arguments\n')
     sys.exit(1)
+  if VERBOSE:
+    sys.stderr.write('info: starting restore from %r to %r\n' % (pathname, restore_target_dir))
   process_recursively(pathname, restore_target_dir)
 
 
