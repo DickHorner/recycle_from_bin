@@ -5,8 +5,8 @@ files (by moving and renaming them) from a Windows Recycle Bin directory. It
 works with and 3 (>= 3.0) and Python 2 (>= 2.4), and it works on Linux,
 macOS (and other Unix-like systems) and Windows.
 
-By default it restores files into the subdirectories of the current
-directory, keeping the original pathname components.
+By default it restores files into the original sourc directories.
+Verbose mode included so you can see what's happening.
 
 It doesn't overwrite files in the restore target directory, but it appends a
 number to the filename to disambiguate.
@@ -19,10 +19,10 @@ Example usage on Linux:
   ./recycle_from_bin.py /media/foo/bar/'$Recycle.Bin'
 ```
 
-Example usage on Windows:
+Example usage on Windows (verbose mode):
 
 ```
-  python recycle_from_bin.py "C:\$Recycle.Bin"
+  python recycle_from_bin.py -v "C:\$Recycle.Bin"
 ```
 
 The license of recycle_from_bin.py is GNU GPL 2.0 or newer.
